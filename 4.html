@@ -197,10 +197,35 @@
     padding: 0;
     background: var(--red);
   }
-  .arrow-l { left: 1292px; clip-path: polygon(100% 0, 0 50%, 100% 100%); }
-  .arrow-r { left: 1516px; clip-path: polygon(0 0, 100% 50%, 0 100%); }
+  .arrow-l { left: 1316px; clip-path: polygon(100% 0, 0 50%, 100% 100%); }
+  .arrow-r { left: 1492px; clip-path: polygon(0 0, 100% 50%, 0 100%); }
   .row-title { top: 122px; }
   .row-date  { top: 243px; }
+
+  /* 이미지 다시 뽑기 줄 : 라벨 + 우측 버튼 (title·date 줄 아래) */
+  .row-redraw {
+    position: absolute;
+    left: 1187px;
+    top: 364px;
+    display: flex;
+    align-items: center;
+    gap: 22px;
+    height: 37px;
+  }
+  .row-redraw .opt-label { position: static; white-space: nowrap; }
+  .redraw-btn {
+    flex: none;
+    height: 37px;
+    padding: 0 20px;
+    border-radius: 19px;
+    background: var(--red);
+    color: #fff;
+    font-family: var(--font-sans);
+    font-weight: 500;
+    font-size: 20px;
+    line-height: 1;
+    white-space: nowrap;
+  }
 
   .round {
     position: absolute;
@@ -349,6 +374,11 @@
     <span class="opt-value row-date" id="date-val">없음</span>
     <button class="arrow arrow-r row-date" id="date-next" aria-label="다음"></button>
 
+    <div class="row-redraw">
+      <span class="opt-label">이미지 다시 뽑기</span>
+      <button class="redraw-btn" id="redraw-btn">1회 남음</button>
+    </div>
+
     <button class="round round-save" id="btn-save">저장</button>
     <button class="round round-other" id="btn-other">다른 춤<br>추기</button>
   </section>
@@ -455,8 +485,15 @@
   const MAX_SCALE = 6;        // 최대 크기 배율 (1 = 짧게 클릭)
   const BRANCHES  = [3, 5];   // 중심에서 뻗는 번개 줄기 수 (최소, 최대)
   const MAX_BOLTS = 14;
-  const JITTER_PX = 3;        // 찌릿거리며 떨리는 정도(px, 크기에 비례해 커짐)
-  const JITTER_MS = 70;       // 떨림 모양이 바뀌는 간격(ms)
+  const BOLT_W    = 10;        // 줄기 최대 굵기 기준(px) — 작을수록 얇음
+  const BEND_W    = .17;       // 꺾이는 부분을 굵게 하는 정도 (0 = 없음, 클수록 꺾임 지점이 더 굵음)
+  const TURN_P    = .78;      // 마디마다 꺾일 확률
+  const TURN_MIN  = .5;      // 꺾이는 각도 범위(라디안): 최소 ~ 최대 (클수록 더 다이나믹)
+  const TURN_MAX  = 1.15;
+  const ZIGZAG    = .5;       // 직전과 반대쪽으로 꺾일 확률 (낮으면 같은 쪽으로 계속 휘어 큰 곡선, 높으면 지그재그)
+  const MAX_SUBS  = 3;        // 번개 하나당 곁가지 최대 수
+  const JITTER_PX = .8;         // 찌릿거리며 떨리는 정도(px, 크기에 비례해 커짐)
+  const JITTER_MS = 90;       // 떨림 모양이 바뀌는 간격(ms)
 
   let W = 0, H = 0;
   let bolts = [];
@@ -476,7 +513,7 @@
   const isRunning = () => !video.paused && !video.ended;
 
   function clearFx() {
-    bolts = []; press = null; frames = []; targets = []; picked = false;
+    bolts = []; press = null; frames = []; targets = []; picked = false; useB = false; rolled = false;
   }
 
   /* 지그재그 경로 → 굵기가 변하고 양 끝이 뾰족한 다각형 */
@@ -495,41 +532,78 @@
     for (let i = 0; i < n; i++) {
       if (i > 0) acc += seg[i - 1].l;
       const t = acc / total;
-      const w = wmax * Math.sin(Math.PI * Math.pow(t, .6));        // 시작 쪽이 가장 굵고 양 끝 0 → 뾰족, 굵기 변화 큼
-      let nx, ny, m = 1;
+      const w = wmax * Math.pow(1 - t, 1.6) * Math.min(1, t / .05 + .35);   // 시작이 가장 굵고 끝으로 갈수록 가늘어져 뾰족
+      let nx, ny, m = 1, bw = 1;
       if (i === 0) { nx = seg[0].nx; ny = seg[0].ny; }
       else if (i === n - 1) { nx = seg[n - 2].nx; ny = seg[n - 2].ny; }
       else {
         nx = seg[i - 1].nx + seg[i].nx; ny = seg[i - 1].ny + seg[i].ny;
         const nl = Math.hypot(nx, ny) || 1; nx /= nl; ny /= nl;
-        m = Math.min(1 / Math.max(.55, nx * seg[i].nx + ny * seg[i].ny), 1.8);   // 꺾인 모서리 보정
+        m = Math.min(1 / Math.max(.6, nx * seg[i].nx + ny * seg[i].ny), 1.6);      // 꺾인 모서리 보정
+        bw = 1 + BEND_W * (1 - (seg[i - 1].nx * seg[i].nx + seg[i - 1].ny * seg[i].ny));   // 많이 꺾일수록 그 지점이 굵어짐
       }
-      const h = w * m / 2;
+      const h = w * m * bw / 2;
       L.push([pts[i][0] + nx * h, pts[i][1] + ny * h]);
       R.push([pts[i][0] - nx * h, pts[i][1] - ny * h]);
     }
     return L.concat(R.reverse());
   }
 
-  /* 한 줄기: 좌우로 번갈아 꺾이는 굵은 번개 */
-  function strokeBolt(x0, y0, a, len, wmax, depth, out, st) {
-    const cx = Math.cos(a), cy = Math.sin(a), nx = -cy, ny = cx;
-    const steps = 4 + Math.floor(Math.random() * 3);
-    const pts = [[x0, y0]];
-    let side = Math.random() < .5 ? -1 : 1;
-    for (let i = 1; i <= steps; i++) {
-      const d = len * i / steps;
-      const off = i === steps ? 0 : side * len * (.07 + Math.random() * .07);
-      const x = x0 + cx * d + nx * off, y = y0 + cy * d + ny * off;
-      pts.push([x, y]);
-      side = -side;
-      if (depth < 1 && st.subs < 2 && i >= 2 && i < steps && Math.random() < .2) {
-        st.subs++;
-        const dir = Math.random() < .5 ? -1 : 1;
-        strokeBolt(x, y, a + dir * (.5 + Math.random() * .4), len * (.35 + Math.random() * .2), wmax * .55, depth + 1, out, st);
+  /* 한 줄기: 중간점 분할(midpoint displacement)로 만든 불규칙한 번개 줄기 + 곁가지 */
+  function jagged(x0, y0, x1, y1, rough, levels) {
+    let pts = [[x0, y0], [x1, y1]];
+    let disp = Math.hypot(x1 - x0, y1 - y0) * rough;
+    for (let l = 0; l < levels; l++) {
+      const out = [pts[0]];
+      for (let i = 1; i < pts.length; i++) {
+        const a = pts[i - 1], c = pts[i];
+        const dx = c[0] - a[0], dy = c[1] - a[1], len = Math.hypot(dx, dy) || 1;
+        const off = (Math.random() * 2 - 1) * disp;
+        out.push([(a[0] + c[0]) / 2 - dy / len * off, (a[1] + c[1]) / 2 + dx / len * off], c);
       }
+      pts = out;
+      disp *= .5;
     }
+    return pts;
+  }
+
+  /* 방향이 큰 폭으로 바뀌며 나아가는 줄기: 한 번 꺾이면 원래 경로로 돌아오지 않고 새 방향으로 이어짐
+     (지그재그로 번갈아 꺾이기도 하고, 같은 쪽으로 계속 휘기도 함) */
+  function wander(x0, y0, ang, len, steps) {
+    const pts = [[x0, y0]];
+    let x = x0, y = y0, h = ang, lastSign = Math.random() < .5 ? -1 : 1;
+    for (let i = 0; i < steps; i++) {
+      const sl = len / steps * (.5 + Math.random() * 1.0);               // 마디 길이 불균일
+      if (Math.random() < TURN_P) {
+        const mag = TURN_MIN + Math.random() * (TURN_MAX - TURN_MIN);
+        const sign = Math.random() < ZIGZAG ? -lastSign : lastSign;      // 반대쪽으로 번갈아 꺾기 vs 같은 쪽으로 계속 휘기
+        h += sign * mag;
+        lastSign = sign;
+      }
+      h += (ang - h) * .1;                                               // 전체 방향에서 너무 멀어지지 않게 아주 약하게 당김
+      h = ang + Math.max(-1.5, Math.min(1.5, h - ang));
+      x += Math.cos(h) * sl; y += Math.sin(h) * sl;
+      pts.push([x, y]);
+    }
+    return pts;
+  }
+
+  function strokeBolt(x0, y0, ang, len, wmax, depth, out, st) {
+    if (len < 26) return;                                  // 너무 짧은 가지는 만들지 않음 (잔 낙서처럼 보이는 것 방지)
+    const steps = depth >= 2 ? 4 + Math.floor(Math.random() * 2) : depth ? 6 + Math.floor(Math.random() * 3) : 9 + Math.floor(Math.random() * 5);
+    const pts = wander(x0, y0, ang, len * 1.15, steps);
     out.push({ pts, wmax });                               // 모양은 그릴 때 살짝 흔들어 다각형으로 변환
+    if (depth >= 2) return;
+    // 곁가지: 줄기 중간 지점에서 갈라져 나가 가늘고 짧음
+    const n = pts.length;
+    for (let i = Math.floor(n * .12); i < n * .8; i++) {
+      if (st.subs >= MAX_SUBS || Math.random() > (depth ? .1 : .18)) continue;
+      st.subs++;
+      const dx = pts[Math.min(i + 2, n - 1)][0] - pts[Math.max(i - 2, 0)][0], dy = pts[Math.min(i + 2, n - 1)][1] - pts[Math.max(i - 2, 0)][1];
+      const head = Math.atan2(dy, dx), dir = Math.random() < .5 ? -1 : 1;
+      const remain = len * (1 - i / n);
+      strokeBolt(pts[i][0], pts[i][1], head + dir * (.35 + Math.random() * .5), remain * (.3 + Math.random() * .3), wmax * .5, depth + 1, out, st);
+    }
   }
 
   function makeBolt(scale) {
@@ -537,10 +611,10 @@
     const st = { subs: 0 };
     const n = BRANCHES[0] + Math.floor(Math.random() * (BRANCHES[1] - BRANCHES[0] + 1));
     const a0 = Math.random() * TAU;
-    const wmax = 18 * Math.pow(scale, .5);
+    const wmax = BOLT_W * Math.pow(scale, .45);
     for (let i = 0; i < n; i++) {
       const a = a0 + i * TAU / n + (Math.random() - .5) * .7;
-      strokeBolt(0, 0, a, (130 + Math.random() * 85) * scale, wmax * (.45 + Math.random() * .9), 0, strokes, st);
+      strokeBolt(0, 0, a, (130 + Math.random() * 85) * scale, wmax * (.6 + Math.random() * .7), 0, strokes, st);
     }
     return strokes;
   }
@@ -578,8 +652,6 @@
     ctx.translate(b.x, b.y);
     ctx.globalAlpha = alpha;
     ctx.fillStyle = b.color;
-    ctx.shadowColor = b.color;
-    ctx.shadowBlur = 10;
     for (const poly of b.polys) {
       ctx.beginPath();
       ctx.moveTo(poly[0][0], poly[0][1]);
@@ -620,8 +692,9 @@
 
 
   /* ══ 랜덤 타이밍 프레임 캡처 (영상 + 인터랙션, UI 제외) ══════════ */
-  const FRAME_COUNT = 4;
-  let frames  = [];     // 캡처된 canvas 4개
+  const SET_SIZE    = 4;                // 한 번에 보여줄 프레임 수
+  const FRAME_COUNT = SET_SIZE * 2;     // 영상 재생 중 총 8장 캡처 (처음 4장 + 다시 뽑기용 4장)
+  let frames  = [];     // 캡처된 canvas 8개 (짝수 번째 = 첫 세트, 홀수 번째 = 다시 뽑기 세트: 두 세트 모두 영상 전체에서 골고루)
   let targets = [];     // 캡처할 재생 시각(초), 오름차순
 
   let picked = false;   // 캡처 시점을 이미 정했는지
@@ -639,7 +712,8 @@
 
   function captureFrame() {
     const c = document.createElement('canvas');
-    c.width = cv.width; c.height = cv.height;
+    const k0 = Math.min(1, 1920 / cv.width);            // 8장 보관: 가로 1920px 상한으로 메모리 절약
+    c.width = Math.round(cv.width * k0); c.height = Math.round(cv.height * k0);
     const g = c.getContext('2d');
     g.fillStyle = '#000'; g.fillRect(0, 0, c.width, c.height);
     const vw = video.videoWidth, vh = video.videoHeight;
@@ -648,7 +722,7 @@
       const dw = vw * k, dh = vh * k;
       g.drawImage(video, (c.width - dw) / 2, (c.height - dh) / 2, dw, dh);   // object-fit: cover 와 동일
     }
-    g.drawImage(cv, 0, 0);                                                    // 인터랙션(번개)
+    g.drawImage(cv, 0, 0, c.width, c.height);                                                    // 인터랙션(번개)
     frames.push(c);
   }
   video.addEventListener('ended', () => {
@@ -668,6 +742,8 @@
   const TITLE_LEFT = 3;                     // 제목 이미지 left (설계 좌표)
   const TITLE_TOP = [0, 17, 222, 500];       // 제목 이미지 top (미리보기 좌표)
   let selFrame = 0, titleIdx = 0, dateIdx = 0;
+  let useB = false, rolled = false;     // 다시 뽑기: 현재 둘째 세트를 보는지 / 이미 한 번 뽑았는지
+  const curFrames = () => frames.filter((_, i) => i % 2 === (useB ? 1 : 0));
 
   const titleImg = new Image();
   titleImg.onload = () => renderResult();
@@ -717,23 +793,30 @@
   thumbs.forEach(t => fitCanvas(t.firstElementChild, 226, 146));
 
   function renderResult() {
-    compose(resMain, frames[selFrame]);
+    const cf = curFrames();
+    compose(resMain, cf[selFrame]);
     thumbs.forEach((t, i) => {
       const c = t.firstElementChild, g = c.getContext('2d');
       g.fillStyle = '#D9D9D9'; g.fillRect(0, 0, c.width, c.height);
-      if (frames[i]) coverDraw(g, frames[i], c.width, c.height);
+      if (cf[i]) coverDraw(g, cf[i], c.width, c.height);
       t.classList.toggle('sel', i === selFrame);
     });
     $('title-val').textContent = POS[titleIdx];
     $('date-val').textContent  = POS[dateIdx];
+    $('redraw-btn').textContent = !rolled ? '1회 남음' : (useB ? '이전 이미지로' : '다시 뽑은 이미지로');
   }
   function initResult() {
     DATE_TEXT = todayText();
     while (frames.length < FRAME_COUNT && video.videoWidth) captureFrame();
-    selFrame = Math.min(selFrame, Math.max(frames.length - 1, 0));
+    selFrame = Math.min(selFrame, Math.max(curFrames().length - 1, 0));
     renderResult();
   }
 
+  /* 이미지 다시 뽑기: 처음 한 번은 새 4장으로, 이후에는 두 세트를 오갈 수 있음 */
+  $('redraw-btn').addEventListener('click', () => {
+    if (!rolled) { rolled = true; useB = true; } else { useB = !useB; }
+    renderResult();
+  });
   thumbs.forEach(t => t.addEventListener('click', () => { selFrame = +t.dataset.i; renderResult(); }));
   const cycle = (v, d) => (v + d + POS.length) % POS.length;
   $('title-prev').addEventListener('click', () => { titleIdx = cycle(titleIdx, -1); renderResult(); });
@@ -743,7 +826,7 @@
 
   /* 저장: 현재 큰 화면(프레임 + 제목 + 날짜)을 PNG로 */
   $('btn-save').addEventListener('click', async () => {
-    const f = frames[selFrame];
+    const f = curFrames()[selFrame];
     if (!f) return;
     try { await document.fonts.ready; } catch (e) {}
     const c = document.createElement('canvas');
